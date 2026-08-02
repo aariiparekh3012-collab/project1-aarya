@@ -1,13 +1,15 @@
 """
-Train a 2-layer LSTM (64 hidden units, 30-day lookback) to forecast
-next-day closing prices of NTPC.
+Train a GRU model for next-day NTPC closing price prediction.
 
-Features and target are independently scaled (StandardScaler on train only).
-Uses Adam optimizer, ReduceLROnPlateau, gradient clipping, and early stopping.
-Predictions are inverse-transformed before evaluation.
+Same architecture, hyperparameters, and evaluation pipeline as lstm_model.py
+but replaces the LSTM cell with GRU. This enables a direct apples-to-apples
+comparison between the two recurrent architectures.
 
-Outputs: models/best_lstm.pth, results/all_model_results.json,
-         plots/training_curves.png, plots/actual_vs_predicted.png
+GRU has fewer parameters (no separate cell state) and often trains faster
+while achieving comparable accuracy on financial time-series tasks.
+
+Outputs: models/best_gru.pth, results/gru_results.json,
+         plots/gru_training_curves.png, plots/gru_actual_vs_predicted.png
 """
 
 from pathlib import Path
@@ -18,13 +20,12 @@ import numpy as np
 import pandas as pd
 
 try:
-    import torch  # type: ignore[reportMissingImports]
-    import torch.nn as nn  # type: ignore[reportMissingImports]
-    from torch.utils.data import Dataset, DataLoader  # type: ignore[reportMissingImports]
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import Dataset, DataLoader
 except ImportError as exc:
     raise ImportError(
-        "PyTorch is required to run this LSTM forecasting script. "
-        "Install it with: pip install torch"
+        "PyTorch is required. Install it with: pip install torch"
     ) from exc
 
 from sklearn.preprocessing import StandardScaler
@@ -36,16 +37,9 @@ MODELS_FOLDER = PROJECT_FOLDER / "models"
 RESULTS_FOLDER = PROJECT_FOLDER / "results"
 PLOTS_FOLDER = PROJECT_FOLDER / "plots"
 
-FEATURE_COLS = [
-    "SMA_20", "SMA_50", "SMA_200", "EMA_12", "EMA_26",
-    "MACD", "RSI", "Stoch_K", "BB_upper", "BB_lower",
-    "ATR", "OBV", "Returns_1d", "Returns_5d",
-    "Returns_20d", "Vol_ratio", "Price_range",
-]
-
 
 # ============================================
-# SEQUENCE DATASET
+# SEQUENCE DATASET (shared with LSTM)
 # ============================================
 class StockDataset(Dataset):
     def __init__(self, X, y, seq_len=30):
@@ -63,14 +57,16 @@ class StockDataset(Dataset):
 
 
 # ============================================
-# LSTM MODEL
+# GRU MODEL
 # ============================================
-class LSTMForecaster(nn.Module):
+class GRUForecaster(nn.Module):
+    """GRU-based price forecaster — mirrors LSTMForecaster architecture."""
+
     def __init__(self, input_dim, hidden_dim=64, num_layers=2, dropout=0.2):
         super().__init__()
-        self.lstm = nn.LSTM(
+        self.gru = nn.GRU(
             input_dim, hidden_dim, num_layers,
-            batch_first=True, dropout=dropout
+            batch_first=True, dropout=dropout,
         )
         self.fc = nn.Sequential(
             nn.Linear(hidden_dim, 32),
@@ -80,13 +76,13 @@ class LSTMForecaster(nn.Module):
         )
 
     def forward(self, x):
-        lstm_out, _ = self.lstm(x)
-        last_hidden = lstm_out[:, -1, :]
+        gru_out, _ = self.gru(x)
+        last_hidden = gru_out[:, -1, :]
         return self.fc(last_hidden).squeeze()
 
 
 # ============================================
-# HYPERPARAMETERS
+# HYPERPARAMETERS (identical to LSTM)
 # ============================================
 SEQ_LEN = 30
 BATCH_SIZE = 32
@@ -94,14 +90,21 @@ EPOCHS = 100
 LR = 0.001
 PATIENCE = 10
 
+FEATURE_COLS = [
+    "SMA_20", "SMA_50", "SMA_200", "EMA_12", "EMA_26",
+    "MACD", "RSI", "Stoch_K", "BB_upper", "BB_lower",
+    "ATR", "OBV", "Returns_1d", "Returns_5d",
+    "Returns_20d", "Vol_ratio", "Price_range",
+]
+
 
 def main():
-    """Train LSTM, evaluate on test set, save model and results."""
+    """Train and evaluate the GRU model."""
     MODELS_FOLDER.mkdir(exist_ok=True)
     RESULTS_FOLDER.mkdir(exist_ok=True)
     PLOTS_FOLDER.mkdir(exist_ok=True)
 
-    # ── Load & prepare data ──
+    # ── Load & split ──
     df = pd.read_csv(DATA_FILE, index_col=0, parse_dates=True)
 
     n = len(df)
@@ -112,13 +115,13 @@ def main():
     val = df.iloc[train_end:val_end]
     test = df.iloc[val_end:]
 
-    # Scale features (fit on train only — no data leakage)
+    # ── Scale features ──
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(train[FEATURE_COLS])
     X_val_scaled = scaler.transform(val[FEATURE_COLS])
     X_test_scaled = scaler.transform(test[FEATURE_COLS])
 
-    # Scale target too — LSTM needs input and output on the same scale
+    # ── Scale target (same fix as LSTM) ──
     target_scaler = StandardScaler()
     y_train = target_scaler.fit_transform(train[["Target"]]).flatten()
     y_val = target_scaler.transform(val[["Target"]]).flatten()
@@ -136,20 +139,25 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    model = LSTMForecaster(input_dim=len(FEATURE_COLS), hidden_dim=64, num_layers=2).to(device)
+    model = GRUForecaster(input_dim=len(FEATURE_COLS)).to(device)
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, patience=5, factor=0.5,
+    )
+
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"\nGRU parameters: {total_params:,}")
+    print(f"Training GRU...")
+    print(f"  Architecture: 2-layer GRU, 64 hidden, 30-day lookback")
+    print(f"  Training samples: {len(train_ds)}, Validation: {len(val_ds)}")
+    print("-" * 60)
 
     best_val_loss = float("inf")
     patience_counter = 0
     train_losses = []
     val_losses = []
-
-    print(f"\nTraining LSTM...")
-    print(f"  Architecture: 2-layer LSTM, 64 hidden, 30-day lookback")
-    print(f"  Training samples: {len(train_ds)}, Validation: {len(val_ds)}")
-    print("-" * 60)
 
     for epoch in range(EPOCHS):
         model.train()
@@ -181,7 +189,7 @@ def main():
 
         if avg_val < best_val_loss:
             best_val_loss = avg_val
-            torch.save(model.state_dict(), MODELS_FOLDER / "best_lstm.pth")
+            torch.save(model.state_dict(), MODELS_FOLDER / "best_gru.pth")
             patience_counter = 0
             marker = " * saved"
         else:
@@ -195,85 +203,75 @@ def main():
             print(f"\n  Early stopping at epoch {epoch}")
             break
 
-    # ── Training curves plot ──
+    # ── Training curves ──
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(train_losses, label="Train Loss", color="#C4A265")
     ax.plot(val_losses, label="Validation Loss", color="#7B9BC4")
-    ax.set_title("LSTM Training & Validation Loss", fontsize=14)
+    ax.set_title("GRU Training & Validation Loss", fontsize=14)
     ax.set_xlabel("Epoch")
     ax.set_ylabel("MSE Loss")
     ax.legend()
     plt.tight_layout()
-    plt.savefig(PLOTS_FOLDER / "training_curves.png", dpi=150, bbox_inches="tight")
+    plt.savefig(PLOTS_FOLDER / "gru_training_curves.png", dpi=150, bbox_inches="tight")
     plt.close()
 
-    # ── Test set evaluation ──
-    model.load_state_dict(torch.load(MODELS_FOLDER / "best_lstm.pth", weights_only=True))
+    # ── Test evaluation ──
+    model.load_state_dict(torch.load(MODELS_FOLDER / "best_gru.pth", weights_only=True))
     model.eval()
 
     all_preds = []
-    all_actuals = []
     test_loader = DataLoader(test_ds, batch_size=len(test_ds))
-
     with torch.no_grad():
-        for X_batch, y_batch in test_loader:
+        for X_batch, _ in test_loader:
             X_batch = X_batch.to(device)
             preds = model(X_batch).cpu().numpy()
             all_preds.extend(preds)
-            all_actuals.extend(y_batch.numpy())
 
-    # Inverse-transform predictions back to real prices
-    lstm_pred_scaled = np.array(all_preds).reshape(-1, 1)
-    lstm_pred = target_scaler.inverse_transform(lstm_pred_scaled).flatten()
+    gru_pred_scaled = np.array(all_preds).reshape(-1, 1)
+    gru_pred = target_scaler.inverse_transform(gru_pred_scaled).flatten()
     y_true = test["Target"].values[SEQ_LEN:]
-    close_for_lstm = test["Close"].values[SEQ_LEN:]
+    close_test = test["Close"].values[SEQ_LEN:]
 
-    rmse = np.sqrt(mean_squared_error(y_true, lstm_pred))
-    mae = mean_absolute_error(y_true, lstm_pred)
-    actual_dir = np.sign(y_true - close_for_lstm)
-    pred_dir = np.sign(lstm_pred - close_for_lstm)
+    rmse = np.sqrt(mean_squared_error(y_true, gru_pred))
+    mae = mean_absolute_error(y_true, gru_pred)
+    actual_dir = np.sign(y_true - close_test)
+    pred_dir = np.sign(gru_pred - close_test)
     dir_acc = np.mean(actual_dir == pred_dir)
 
-    print(f"\n--- LSTM TEST RESULTS ---")
+    print(f"\n--- GRU TEST RESULTS ---")
     print(f"  RMSE:             {rmse:.2f}")
     print(f"  MAE:              {mae:.2f}")
     print(f"  Directional Acc:  {dir_acc:.2%}")
+    print(f"  Parameters:       {total_params:,}")
 
-    with open(RESULTS_FOLDER / "baseline_results.json", "r") as f:
-        baseline_results = json.load(f)
+    # Save results
+    gru_result = {
+        "model": "GRU",
+        "rmse": round(float(rmse), 2),
+        "mae": round(float(mae), 2),
+        "dir_acc": round(float(dir_acc), 4),
+        "parameters": total_params,
+    }
+    with open(RESULTS_FOLDER / "gru_results.json", "w") as f:
+        json.dump(gru_result, f, indent=2)
 
-    lstm_result = {"model": "LSTM", "rmse": float(rmse), "mae": float(mae), "dir_acc": float(dir_acc)}
-    all_results = baseline_results + [lstm_result]
-
-    with open(RESULTS_FOLDER / "all_model_results.json", "w") as f:
-        json.dump(all_results, f, indent=2)
-
-    print(f"\n--- MODEL COMPARISON ---")
-    print(f"  {'Model':20s} | {'RMSE':>10s} | {'MAE':>10s} | {'Dir.Acc':>10s}")
-    print(f"  {'-' * 58}")
-    for r in all_results:
-        print(f"  {r['model']:20s} | {r['rmse']:10.2f} | {r['mae']:10.2f} | {r['dir_acc']:>9.2%}")
-
-    # Actual vs Predicted plot
+    # ── Actual vs Predicted plot ──
     fig, ax = plt.subplots(figsize=(14, 6))
     ax.plot(y_true, label="Actual", color="#C4A265", linewidth=1)
-    ax.plot(lstm_pred, label="LSTM Predicted", color="#7B9BC4", linewidth=1, alpha=0.8)
-    ax.set_title("LSTM: Actual vs Predicted Prices (Test Set)", fontsize=14)
+    ax.plot(gru_pred, label="GRU Predicted", color="#2E8B57", linewidth=1, alpha=0.8)
+    ax.set_title("GRU: Actual vs Predicted Prices (Test Set)", fontsize=14)
     ax.set_xlabel("Trading Days")
     ax.set_ylabel("Price (INR)")
     ax.legend()
     plt.tight_layout()
-    plt.savefig(PLOTS_FOLDER / "actual_vs_predicted.png", dpi=150, bbox_inches="tight")
+    plt.savefig(PLOTS_FOLDER / "gru_actual_vs_predicted.png", dpi=150, bbox_inches="tight")
     plt.close()
 
-    # Save predictions for backtesting
-    np.save(RESULTS_FOLDER / "lstm_predictions.npy", lstm_pred)
-    np.save(RESULTS_FOLDER / "test_actuals.npy", y_true)
-    np.save(RESULTS_FOLDER / "test_close.npy", close_for_lstm)
+    # Save predictions
+    np.save(RESULTS_FOLDER / "gru_predictions.npy", gru_pred)
 
-    print(f"\nModel saved: {MODELS_FOLDER / 'best_lstm.pth'}")
-    print(f"Plots saved: training_curves.png, actual_vs_predicted.png")
-    print(f"Predictions saved for backtesting.")
+    print(f"\nModel saved: {MODELS_FOLDER / 'best_gru.pth'}")
+    print(f"Plots saved: gru_training_curves.png, gru_actual_vs_predicted.png")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,16 @@
+{
+  "strategy": {
+    "total_return": "2.14%",
+    "sharpe_ratio": 1.128,
+    "max_drawdown": "0.00%",
+    "win_rate": "100.0%",
+    "days_invested": 1,
+    "total_trading_days": 199,
+    "exposure": "0.5%"
+  },
+  "buy_and_hold": {
+    "total_return": "0.92%",
+    "sharpe_ratio": 0.157,
+    "max_drawdown": "-16.66%"
+  }
+}

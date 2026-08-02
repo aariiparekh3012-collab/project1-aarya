@@ -1,0 +1,7 @@
+{
+  "model": "GRU",
+  "rmse": 25.57,
+  "mae": 21.9,
+  "dir_acc": 0.48,
+  "parameters": 43009
+}

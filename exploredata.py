@@ -1,3 +1,10 @@
+"""
+Initial exploratory data analysis — load NTPC raw data and plot
+closing price trend over the full 5-year period.
+
+Outputs: plots/ntpc_closing_price.png
+"""
+
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -15,44 +22,34 @@ PLOTS_FOLDER = PROJECT_FOLDER / "plots"
 PLOTS_FOLDER.mkdir(exist_ok=True)
 
 
-# Load the CSV file.
-data = pd.read_csv(DATA_FILE, header=[0, 1], index_col=0, parse_dates=True)
+def main():
+    """Load raw data, print summary stats, and plot closing price."""
+    data = pd.read_csv(DATA_FILE, header=[0, 1], index_col=0, parse_dates=True)
+    data.columns = data.columns.get_level_values(0)
 
-# yfinance may save column names in two levels.
-# Keep only the first level: Close, High, Low, Open, Volume.
-data.columns = data.columns.get_level_values(0)
+    print("Data loaded successfully.")
+    print("Number of rows:", len(data))
+    print("\nColumn names:")
+    print(data.columns.tolist())
+    print("\nFirst five rows:")
+    print(data.head())
+    print("\nMissing values:")
+    print(data.isna().sum())
 
-print("Data loaded successfully.")
-print("Number of rows:", len(data))
+    plt.figure(figsize=(12, 6))
+    plt.plot(data.index, data["Close"])
+    plt.title("NTPC Closing Price")
+    plt.xlabel("Date")
+    plt.ylabel("Price in INR")
+    plt.grid(True)
+    plt.tight_layout()
 
-print("\nColumn names:")
-print(data.columns.tolist())
+    output_chart = PLOTS_FOLDER / "ntpc_closing_price.png"
+    plt.savefig(output_chart, dpi=150)
+    plt.show()
 
-print("\nFirst five rows:")
-print(data.head())
-
-print("\nMissing values:")
-print(data.isna().sum())
+    print("\nChart saved at:", output_chart)
 
 
-# Create a closing-price chart.
-plt.figure(figsize=(12, 6))
-
-plt.plot(data.index, data["Close"])
-
-plt.title("NTPC Closing Price")
-plt.xlabel("Date")
-plt.ylabel("Price in INR")
-plt.grid(True)
-
-# Make the layout fit properly.
-plt.tight_layout()
-
-# Save the chart inside the plots folder.
-output_chart = PLOTS_FOLDER / "ntpc_closing_price.png"
-plt.savefig(output_chart, dpi=150)
-
-# Display the chart.
-plt.show()
-
-print("\nChart saved at:", output_chart)
+if __name__ == "__main__":
+    main()
