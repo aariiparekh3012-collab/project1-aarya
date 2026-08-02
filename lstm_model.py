@@ -49,14 +49,19 @@ train = df.iloc[:train_end]
 val = df.iloc[train_end:val_end]
 test = df.iloc[val_end:]
 
+# Scale features (fit on train only — no data leakage)
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(train[feature_cols])
 X_val_scaled = scaler.transform(val[feature_cols])
 X_test_scaled = scaler.transform(test[feature_cols])
 
-y_train = train["Target"].values
-y_val = val["Target"].values
-y_test = test["Target"].values
+# Scale target too — LSTM needs input and output on the same scale
+# Without this, features are ~0 but target is ~300-400 → gradients blow up
+target_scaler = StandardScaler()
+y_train = target_scaler.fit_transform(train[["Target"]]).flatten()
+y_val = target_scaler.transform(val[["Target"]]).flatten()
+y_test_scaled = target_scaler.transform(test[["Target"]]).flatten()
+y_test = test["Target"].values  # keep raw for evaluation
 
 
 # ============================================
@@ -115,7 +120,7 @@ PATIENCE = 10
 # ============================================
 train_ds = StockDataset(X_train_scaled, y_train, SEQ_LEN)
 val_ds = StockDataset(X_val_scaled, y_val, SEQ_LEN)
-test_ds = StockDataset(X_test_scaled, y_test, SEQ_LEN)
+test_ds = StockDataset(X_test_scaled, y_test_scaled, SEQ_LEN)  # scaled targets for loss
 
 train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False)
 val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False)
@@ -222,8 +227,10 @@ with torch.no_grad():
         all_preds.extend(preds)
         all_actuals.extend(y_batch.numpy())
 
-lstm_pred = np.array(all_preds)
-y_true = np.array(all_actuals)
+# Inverse-transform predictions and actuals back to real prices
+lstm_pred_scaled = np.array(all_preds).reshape(-1, 1)
+lstm_pred = target_scaler.inverse_transform(lstm_pred_scaled).flatten()
+y_true = test["Target"].values[SEQ_LEN:]  # use raw target for evaluation
 close_for_lstm = test["Close"].values[SEQ_LEN:]
 
 # Metrics
